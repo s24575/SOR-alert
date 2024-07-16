@@ -1,104 +1,133 @@
+import configparser
+import sys
 import socket
 import json
 import threading
-import tkinter as tk
-from tkinter import messagebox
-import configparser
-from typing import Any, Dict, List, Tuple
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget, QListWidget, QListWidgetItem,\
+    QSystemTrayIcon, QDialog, QLabel, QDialogButtonBox
+from PySide6.QtCore import Signal, QObject, Qt
+from PySide6.QtGui import QIcon
 
 
-def show_alert_window(pathologies: List[Tuple[str, float]]):
-    message = "The following pathologies have been detected:\n"
-    message += "\n".join([f"{pathology}: {int(probability * 100)}%"
-                          for pathology, probability in pathologies])
-    messagebox.showwarning("Alert", message)
+class ResultNotifier(QObject):
+    new_result_signal = Signal(str)
 
 
-def create_window():
-    window = tk.Tk()
-    window.title("SOR Early Alert")
-    window.minsize(width=400, height=40)
-    window.resizable(width=False, height=False)
+class ResultDialog(QDialog):
+    def __init__(self, patient, pathologies, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"Patient: {patient} - Result Details")
 
-    label = tk.Label(window, text="Listening for incoming data")
-    label.pack(padx=10, pady=10)
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel(f"Patient: {patient}"))
 
-    window.mainloop()
+        for pathology, probability in pathologies:
+            layout.addWidget(QLabel(f"{pathology}: {probability}"))
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        button_box.accepted.connect(self.accept)
+        layout.addWidget(button_box)
+
+        self.setLayout(layout)
 
 
-def handle_json_data(data: Any, condition_probabilities: Dict[str, float]):
-    try:
-        json_data = json.loads(data)
+class MainWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("BrainScan Alert")
+        self.setGeometry(100, 100, 400, 600)
+
+        layout = QVBoxLayout()
+        self.list_widget = QListWidget()
+        layout.addWidget(self.list_widget)
+
+        self.setLayout(layout)
+
+        self.result_notifier = ResultNotifier()
+        self.result_notifier.new_result_signal.connect(self.handle_json_data)
+
+        self.tray_icon = QSystemTrayIcon(QIcon("icon.png"), self)
+        self.tray_icon.setVisible(True)
+
+        self.config = configparser.ConfigParser()
+        self.config.read('config.ini')
+
+        self.condition_probabilities = self.get_condition_probabilities()
+
+        self.list_widget.itemDoubleClicked.connect(self.show_result_details)
+
+    def get_condition_probabilities(self):
+        return {key: float(value) for key, value in self.config['CONDITIONS'].items()}
+
+    def handle_json_data(self, data):
+        try:
+            json_data = json.loads(data)
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON data: {e}")
+            return
+
+        patient = json_data.get("StudyDescription", "Unknown")
         results = json_data.get("AnalysisResults")
         if results is None:
             print("AnalysisResults are missing in the json file.")
             return
-        
+
         translations = json_data.get("translation")
         if translations is None:
             print("translations are missing in the json file.")
             return
 
-        pathologies: List[str, float] = []
+        pathologies: list[tuple[str, float]] = []
         for pathology, probability in results.items():
-            min_probability = condition_probabilities.get(pathology)
+            min_probability = self.condition_probabilities.get(pathology)
             translation = translations.get(pathology, pathology)
             if min_probability is None or probability >= min_probability:
                 pathologies.append((translation, probability))
 
         if pathologies:
-            show_alert_window(pathologies)
+            self.add_result(patient, pathologies)
 
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON data: {e}")
+    def add_result(self, patient, pathologies):
+        item = QListWidgetItem(f"Patient: {patient}")
+        item.setData(Qt.ItemDataRole.UserRole, (patient, pathologies))
+        self.list_widget.addItem(item)
 
+        self.tray_icon.showMessage(
+            "New Patient Result",
+            f"Patient: {patient} has new results.",
+            QSystemTrayIcon.MessageIcon.Information,
+            5000
+        )
 
-# Flag to signal the server thread to exit
-exit_flag = threading.Event()
-
-
-def start_server(host: str, port: int, condition_probabilities: Dict[str, float]):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-        server_socket.bind((host, port))
-        server_socket.listen()
-
-        print(f"Server listening on {host}:{port}")
-
-        while not exit_flag.is_set():
-            try:
-                server_socket.settimeout(1)
-                client_socket, client_address = server_socket.accept()
-                data = client_socket.recv(4096)
-                handle_json_data(data, condition_probabilities)
-                client_socket.close()
-            except socket.timeout:
-                pass
-            except socket.error as e:
-                print(f"Socket binding error: {e}")
+    def show_result_details(self, item):
+        patient, pathologies = item.data(Qt.ItemDataRole.UserRole)
+        dialog = ResultDialog(patient, pathologies, self)
+        dialog.exec()
 
 
-def main():
-    config = configparser.ConfigParser()
-    config.read('config.ini')
+def listen_for_results(notifier):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(('localhost', 12345))
+    sock.listen(1)
 
-    host = config['SERVER']['HOST']
-    port = int(config['SERVER']['PORT'])
-
-    condition_probabilities = {key: float(value) for key, value in config['CONDITIONS'].items()}
-
-    # Start the server in a separate thread
-    server_thread = threading.Thread(target=start_server, args=(host, port, condition_probabilities))
-    server_thread.start()
-
-    # Run the Tkinter window in the main thread
-    create_window()
-
-    # Set the exit flag to signal the server thread to terminate
-    exit_flag.set()
-
-    # Wait for the server thread to finish
-    server_thread.join()
+    while True:
+        conn, addr = sock.accept()
+        with conn:
+            data = conn.recv(4096)
+            if not data:
+                break
+            data = data.decode('utf-8')
+            notifier.new_result_signal.emit(data)
 
 
 if __name__ == "__main__":
-    main()
+    app = QApplication(sys.argv)
+
+    window = MainWindow()
+    window.show()
+
+    listener_thread = threading.Thread(target=listen_for_results, args=(window.result_notifier,))
+    listener_thread.daemon = True
+    listener_thread.start()
+
+    sys.exit(app.exec())
