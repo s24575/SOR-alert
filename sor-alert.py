@@ -3,14 +3,14 @@ import sys
 import socket
 import json
 import threading
-from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget, QListWidget, QListWidgetItem,\
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget, QListWidget, QListWidgetItem, \
     QSystemTrayIcon, QDialog, QLabel, QDialogButtonBox
 from PySide6.QtCore import Signal, QObject, Qt
 from PySide6.QtGui import QIcon
 
 
 class ResultNotifier(QObject):
-    new_result_signal = Signal(str)
+    new_result_signal = Signal(dict)
 
 
 class ResultDialog(QDialog):
@@ -57,22 +57,16 @@ class MainWindow(QWidget):
         self.list_widget.itemDoubleClicked.connect(self.show_result_details)
 
     def get_condition_probabilities(self):
-        return {key: float(value) for key, value in self.config['CONDITIONS'].items()}
+        return {key: float(value) for key, value in self.config['CONDITIONS_PROBABILITIES'].items()}
 
-    def handle_json_data(self, data):
-        try:
-            json_data = json.loads(data)
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON data: {e}")
-            return
-
-        patient = json_data.get("StudyDescription", "Unknown")
-        results = json_data.get("AnalysisResults")
+    def handle_json_data(self, data: dict):
+        patient = data.get("StudyDescription", "Unknown")
+        results = data.get("AnalysisResults")
         if results is None:
             print("AnalysisResults are missing in the json file.")
             return
 
-        translations = json_data.get("translation")
+        translations = data.get("translation")
         if translations is None:
             print("translations are missing in the json file.")
             return
@@ -113,11 +107,18 @@ def listen_for_results(notifier):
     while True:
         conn, addr = sock.accept()
         with conn:
-            data = conn.recv(4096)
-            if not data:
-                break
-            data = data.decode('utf-8')
-            notifier.new_result_signal.emit(data)
+            buffer = b""
+            while True:
+                data = conn.recv(1024)
+                if not data:
+                    break
+                buffer += data
+            try:
+                message = buffer.decode('utf-8')
+                json_data = json.loads(message)
+                notifier.new_result_signal.emit(json_data)
+            except json.JSONDecodeError as e:
+                print(f"Failed to decode JSON: {e}")
 
 
 if __name__ == "__main__":
