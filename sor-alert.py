@@ -3,10 +3,14 @@ import sys
 import socket
 import json
 import threading
+from datetime import datetime
+
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget, QListWidget, QListWidgetItem, \
-    QSystemTrayIcon, QDialog, QLabel, QDialogButtonBox
+    QSystemTrayIcon, QDialog, QLabel, QDialogButtonBox, QHBoxLayout, QGridLayout
 from PySide6.QtCore import Signal, QObject, Qt
 from PySide6.QtGui import QIcon
+
+from client.client_script import send_data
 
 
 class ResultNotifier(QObject):
@@ -29,6 +33,41 @@ class ResultDialog(QDialog):
         layout.addWidget(button_box)
 
         self.setLayout(layout)
+
+
+class PatientWidget(QWidget):
+    def __init__(self, patient, pathologies, time: datetime, parent=None):
+        super().__init__(parent)
+
+        # Main layout
+        self.mainLayout = QGridLayout()
+
+        # Patient name label
+        self.patient_label = QLabel(f"Patient: {patient}")
+        self.patient_label.setStyleSheet('font-weight: bold; color: rgb(0, 0, 255);')
+        self.mainLayout.addWidget(self.patient_label, 0, 0)
+
+        # Time label
+        self.time_label = QLabel(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        self.time_label.setStyleSheet('color: rgb(150, 150, 150);')
+        self.mainLayout.addWidget(self.time_label, 0, 1)
+
+        # Icon (if pathologies detected)
+        self.iconQLabel = QLabel()
+        if pathologies:
+            self.iconQLabel.setPixmap(QIcon("images/warning_icon.png").pixmap(16, 16))
+        self.mainLayout.addWidget(self.iconQLabel, 0, 2)
+
+        self.setLayout(self.mainLayout)
+        self.setStyleSheet('''
+            QWidget {
+                border: 1px solid rgb(200, 200, 200);
+                border-radius: 5px;
+                margin: 5px;
+                padding: 5px;
+                background-color: rgb(245, 245, 245);
+            }
+        ''')
 
 
 class MainWindow(QWidget):
@@ -58,6 +97,7 @@ class MainWindow(QWidget):
         self.condition_probabilities = self.get_condition_probabilities()
 
         self.list_widget.itemDoubleClicked.connect(self.show_result_details)
+        self.list_widget.itemChanged.connect(self.update_results_count)
 
     def get_condition_probabilities(self):
         return {key: float(value) for key, value in self.config['CONDITIONS_PROBABILITIES'].items()}
@@ -82,13 +122,19 @@ class MainWindow(QWidget):
                 pathologies.append((translation, probability))
 
         if pathologies:
-            self.add_result(patient, pathologies)
+            time = data.get("created")
+            if time is not None:
+                time = datetime.fromisoformat(time)
+            self.add_result(patient, pathologies, time)
             self.update_results_count()
 
-    def add_result(self, patient, pathologies):
-        item = QListWidgetItem(f"Patient: {patient}")
+    def add_result(self, patient, pathologies, time):
+        item_widget = PatientWidget(patient, pathologies, time)
+        item = QListWidgetItem(self.list_widget)
+        item.setSizeHint(item_widget.sizeHint())
         item.setData(Qt.ItemDataRole.UserRole, (patient, pathologies))
         self.list_widget.addItem(item)
+        self.list_widget.setItemWidget(item, item_widget)
 
         self.tray_icon.showMessage(
             "New Patient Result",
@@ -128,7 +174,7 @@ def listen_for_results(notifier):
                 print(f"Failed to decode JSON: {e}")
 
 
-if __name__ == "__main__":
+def main():
     app = QApplication(sys.argv)
 
     window = MainWindow()
@@ -138,4 +184,10 @@ if __name__ == "__main__":
     listener_thread.daemon = True
     listener_thread.start()
 
+    send_data()
+
     sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
