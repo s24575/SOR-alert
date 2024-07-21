@@ -4,13 +4,20 @@ import socket
 import json
 import threading
 from datetime import datetime
+from enum import Enum
 
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget, QListWidget, QListWidgetItem, \
-    QSystemTrayIcon, QDialog, QLabel, QDialogButtonBox, QHBoxLayout, QGridLayout
+    QSystemTrayIcon, QDialog, QLabel, QDialogButtonBox, QGridLayout, QHBoxLayout
 from PySide6.QtCore import Signal, QObject, Qt
 from PySide6.QtGui import QIcon
 
 from client.client_script import send_data
+
+
+class PatientStatus(Enum):
+    NEW = "New"
+    IN_PROGRESS = "In Progress"
+    DONE = "Done"
 
 
 class ResultNotifier(QObject):
@@ -18,63 +25,92 @@ class ResultNotifier(QObject):
 
 
 class ResultDialog(QDialog):
-    def __init__(self, patient, pathologies, parent=None):
+    def __init__(self, study_description, pathologies, condition_probabilities, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(f"Patient: {patient} - Result Details")
+        self.setWindowTitle(f"{study_description} - Result Details")
 
-        layout = QVBoxLayout()
-        layout.addWidget(QLabel(f"Patient: {patient}"))
+        # Create the layout
+        layout = QGridLayout()
+        self.setLayout(layout)
 
-        for pathology, probability in pathologies:
-            layout.addWidget(QLabel(f"{pathology}: {probability}"))
+        # Set up labels for headers
+        layout.addWidget(QLabel("Pathology"), 0, 0)
+        layout.addWidget(QLabel("Probability"), 0, 1)
+        layout.addWidget(QLabel("Min Probability"), 0, 2)
+        layout.addWidget(QLabel("Status"), 0, 3)
 
+        # Sort pathologies from most to least probable
+        sorted_pathologies = sorted(pathologies.items(), key=lambda x: x[1], reverse=True)
+
+        index = 0
+
+        # Add rows to the layout
+        for index, (pathology, probability) in enumerate(sorted_pathologies, start=1):
+            # Pathology name
+            layout.addWidget(QLabel(pathology), index, 0)
+
+            # Probability value
+            prob_label = QLabel(f"{probability:.2f}")
+            layout.addWidget(prob_label, index, 1)
+
+            # Min probability from config
+            min_prob = condition_probabilities.get(pathology, 0)
+            min_prob_label = QLabel(f"{min_prob:.2f}")
+            layout.addWidget(min_prob_label, index, 2)
+
+            # Status icon or label
+            if probability >= min_prob:
+                status_icon_path = "images/warning_icon.png"
+            else:
+                status_icon_path = "images/checkmark_icon.png"
+
+            status_icon = QLabel()
+            status_icon.setPixmap(QIcon(status_icon_path).pixmap(16, 16))
+            layout.addWidget(status_icon, index, 3)
+
+        # Add the OK button
         button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
         button_box.accepted.connect(self.accept)
-        layout.addWidget(button_box)
-
-        self.setLayout(layout)
+        layout.addWidget(button_box, index + 1, 0, 1, 4)
 
 
 class PatientWidget(QWidget):
     def __init__(self, patient, pathologies, time: datetime, parent=None):
         super().__init__(parent)
 
-        # Main layout
-        self.mainLayout = QGridLayout()
+        # Main horizontal layout
+        self.mainLayout = QHBoxLayout()
+        self.mainLayout.setContentsMargins(0, 0, 0, 0)
+        self.mainLayout.setSpacing(10)
+        self.setLayout(self.mainLayout)
 
-        # Patient name label
-        self.patient_label = QLabel(f"Patient: {patient}")
+        # Fixed width patient label
+        self.patient_label = QLabel(f"{patient}")
+        self.patient_label.setFixedWidth(150)
         self.patient_label.setStyleSheet('font-weight: bold; color: rgb(0, 0, 255);')
-        self.mainLayout.addWidget(self.patient_label, 0, 0)
+        self.mainLayout.addWidget(self.patient_label)
 
-        # Time label
-        self.time_label = QLabel(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        # Fixed width time label
+        self.time_label = QLabel(f"{time.strftime('%Y-%m-%d %H:%M:%S')}")
+        self.time_label.setFixedWidth(150)
         self.time_label.setStyleSheet('color: rgb(150, 150, 150);')
-        self.mainLayout.addWidget(self.time_label, 0, 1)
+        self.mainLayout.addWidget(self.time_label)
 
-        # Icon (if pathologies detected)
+        # Fixed width icon label
         self.iconQLabel = QLabel()
         if pathologies:
             self.iconQLabel.setPixmap(QIcon("images/warning_icon.png").pixmap(16, 16))
-        self.mainLayout.addWidget(self.iconQLabel, 0, 2)
-
-        self.setLayout(self.mainLayout)
-        self.setStyleSheet('''
-            QWidget {
-                border: 1px solid rgb(200, 200, 200);
-                border-radius: 5px;
-                margin: 5px;
-                padding: 5px;
-                background-color: rgb(245, 245, 245);
-            }
-        ''')
+        self.iconQLabel.setFixedWidth(30)
+        self.mainLayout.addWidget(self.iconQLabel)
 
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BrainScan Alert")
-        self.setGeometry(100, 100, 400, 500)
+        self.setFixedSize(400, 500)
+        self.brainscan_icon = QIcon("images/small_brainscan_icon.jpg")
+        self.setWindowIcon(self.brainscan_icon)
 
         self.list_widget = QListWidget()
         self.results_count = QLabel()
@@ -88,7 +124,7 @@ class MainWindow(QWidget):
         self.result_notifier = ResultNotifier()
         self.result_notifier.new_result_signal.connect(self.handle_json_data)
 
-        self.tray_icon = QSystemTrayIcon(QIcon("images/small_brainscan_icon.jpg"), self)
+        self.tray_icon = QSystemTrayIcon(self.brainscan_icon, self)
         self.tray_icon.setVisible(True)
 
         self.config = configparser.ConfigParser()
@@ -97,13 +133,12 @@ class MainWindow(QWidget):
         self.condition_probabilities = self.get_condition_probabilities()
 
         self.list_widget.itemDoubleClicked.connect(self.show_result_details)
-        self.list_widget.itemChanged.connect(self.update_results_count)
 
     def get_condition_probabilities(self):
         return {key: float(value) for key, value in self.config['CONDITIONS_PROBABILITIES'].items()}
 
     def handle_json_data(self, data: dict):
-        patient = data.get("StudyDescription", "Unknown")
+        study_description = data.get("StudyDescription", "Unknown")
         results = data.get("AnalysisResults")
         if results is None:
             print("AnalysisResults are missing in the json file.")
@@ -114,31 +149,24 @@ class MainWindow(QWidget):
             print("translations are missing in the json file.")
             return
 
-        pathologies: list[tuple[str, float]] = []
-        for pathology, probability in results.items():
-            min_probability = self.condition_probabilities.get(pathology)
-            translation = translations.get(pathology, pathology)
-            if min_probability is None or probability >= min_probability:
-                pathologies.append((translation, probability))
-
-        if pathologies:
+        if results:
             time = data.get("created")
             if time is not None:
                 time = datetime.fromisoformat(time)
-            self.add_result(patient, pathologies, time)
+            self.add_result(study_description, results, time)
             self.update_results_count()
 
-    def add_result(self, patient, pathologies, time):
-        item_widget = PatientWidget(patient, pathologies, time)
+    def add_result(self, study_description, pathologies, time):
+        item_widget = PatientWidget(study_description, pathologies, time)
         item = QListWidgetItem(self.list_widget)
-        item.setSizeHint(item_widget.sizeHint())
-        item.setData(Qt.ItemDataRole.UserRole, (patient, pathologies))
+        item.setSizeHint(item_widget.sizeHint())  # Ensure consistency
+        item.setData(Qt.ItemDataRole.UserRole, (study_description, pathologies))
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, item_widget)
 
         self.tray_icon.showMessage(
-            "New Patient Result",
-            f"Patient: {patient} has new results.",
+            "New patient results",
+            f"Received new results for: {study_description}",
             QSystemTrayIcon.MessageIcon.Information,
             10000
         )
@@ -147,8 +175,8 @@ class MainWindow(QWidget):
         self.results_count.setText(f"Results: {self.list_widget.count()}")
 
     def show_result_details(self, item):
-        patient, pathologies = item.data(Qt.ItemDataRole.UserRole)
-        dialog = ResultDialog(patient, pathologies, self)
+        study_description, pathologies = item.data(Qt.ItemDataRole.UserRole)
+        dialog = ResultDialog(study_description, pathologies, self.condition_probabilities, self)
         dialog.exec()
 
 
@@ -176,6 +204,7 @@ def listen_for_results(notifier):
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName("BrainScan Alert")
 
     window = MainWindow()
     window.show()
@@ -184,7 +213,9 @@ def main():
     listener_thread.daemon = True
     listener_thread.start()
 
-    send_data()
+    send_data("client/example-results-1.json")
+    send_data("client/example-results-2.json")
+    send_data("client/example-results-3.json")
 
     sys.exit(app.exec())
 

@@ -1,7 +1,7 @@
 import socket
 
 
-def send_data():
+def send_data(result_path: str):
     # Set up the socket
     host = '127.0.0.1'
     port = 12345
@@ -13,7 +13,7 @@ def send_data():
     client_socket.connect((host, port))
 
     # Read the example json file
-    with open("client/new-results.json", "r") as f:
+    with open(result_path, "r") as f:
         data = f.read()
 
     # Send data to the server
@@ -24,4 +24,4 @@ def send_data():
 
 
 if __name__ == "__main__":
-    send_data()
+    send_data("client/example-results-1.json")
