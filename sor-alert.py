@@ -35,10 +35,13 @@ class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("BrainScan Alert")
-        self.setGeometry(100, 100, 400, 600)
+        self.setGeometry(100, 100, 400, 500)
 
-        layout = QVBoxLayout()
         self.list_widget = QListWidget()
+        self.results_count = QLabel()
+        self.update_results_count()
+        layout = QVBoxLayout()
+        layout.addWidget(self.results_count)
         layout.addWidget(self.list_widget)
 
         self.setLayout(layout)
@@ -46,7 +49,7 @@ class MainWindow(QWidget):
         self.result_notifier = ResultNotifier()
         self.result_notifier.new_result_signal.connect(self.handle_json_data)
 
-        self.tray_icon = QSystemTrayIcon(QIcon("icon.png"), self)
+        self.tray_icon = QSystemTrayIcon(QIcon("images/small_brainscan_icon.jpg"), self)
         self.tray_icon.setVisible(True)
 
         self.config = configparser.ConfigParser()
@@ -80,6 +83,7 @@ class MainWindow(QWidget):
 
         if pathologies:
             self.add_result(patient, pathologies)
+            self.update_results_count()
 
     def add_result(self, patient, pathologies):
         item = QListWidgetItem(f"Patient: {patient}")
@@ -90,8 +94,11 @@ class MainWindow(QWidget):
             "New Patient Result",
             f"Patient: {patient} has new results.",
             QSystemTrayIcon.MessageIcon.Information,
-            5000
+            10000
         )
+
+    def update_results_count(self):
+        self.results_count.setText(f"Results: {self.list_widget.count()}")
 
     def show_result_details(self, item):
         patient, pathologies = item.data(Qt.ItemDataRole.UserRole)
